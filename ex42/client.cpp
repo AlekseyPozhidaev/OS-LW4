@@ -5,6 +5,7 @@ using namespace std;
 
 #define PIPE_NAME L"\\\\.\\pipe\\MyLabPipe"
 
+// Функция обратного вызова (Callback). 
 VOID WINAPI FileIOCompletionRoutine(DWORD dwErrorCode, DWORD dwNumberOfBytesTransfered, LPOVERLAPPED lpOverlapped) {
     if (dwErrorCode == 0) {
         cout << "\n[SYSTEM] Data received successfully (" << dwNumberOfBytesTransfered << " bytes).\n";
@@ -36,13 +37,14 @@ int main() {
                     cout << "Already connected!\n";
                     break;
                 }
+                // Win32 API: Открытие канала
                 hFile = CreateFileW(
                     PIPE_NAME,
-                    GENERIC_READ,
-                    0,
-                    NULL,
-                    OPEN_EXISTING,
-                    FILE_FLAG_OVERLAPPED, 
+                    GENERIC_READ,           // Только чтение
+                    0,                      // Без совместного доступа
+                    NULL,                   // Защита по умолчанию
+                    OPEN_EXISTING,          // Открыть только если канал создан сервером
+                    FILE_FLAG_OVERLAPPED,   // Обязательный флаг для асинхронности
                     NULL);
                     
                 if (hFile == INVALID_HANDLE_VALUE) {
@@ -61,10 +63,13 @@ int main() {
                 ZeroMemory(&ol, sizeof(OVERLAPPED));
                 
                 cout << "Starting async read...\n";
+                // Асинхронное чтение. 
                 if (ReadFileEx(hFile, buffer, sizeof(buffer), &ol, FileIOCompletionRoutine)) {
                     cout << "Waiting for data (thread in alertable state)...\n";
-                    // SleepEx with TRUE flag allows the Completion Routine to run
+                    
+                    // Поток в может быть вызван
                     SleepEx(INFINITE, TRUE);
+                    
                     cout << "Message content: " << buffer << "\n";
                 } else {
                     cout << "ReadFileEx failed. Error: " << GetLastError() << "\n";
