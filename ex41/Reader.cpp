@@ -5,7 +5,7 @@ int main() {
 
     SYSTEM_INFO si;
     GetSystemInfo(&si);
-    DWORD totalSize;
+    DWORD totalSize = sizeof(ControlHeader) + (PAGE_COUNT * si.dwPageSize);
 
     HANDLE hFile = NULL;
     HANDLE hMapFile = NULL;
@@ -16,66 +16,50 @@ int main() {
         return 1;
     }
 
-    // Заголовок находится в начале разделяемой памяти
+    VirtualLock(pBuf, totalSize);
     ControlHeader* header = (ControlHeader*)pBuf;
 
     std::string logName = "Reader_" + std::to_string(GetCurrentProcessId()) + ".csv";
     std::ofstream log(logName);
 
     for (int i = 0; i < ITERATIONS; i++) {
-        int page = rand() % PAGE_COUNT;
-        
-        char mutName[64], semName[64];
-        sprintf_s(mutName, "%s%d", MUTEX_PREFIX, page);
+        int page = -1;
+
+        LogCsv(log, 0, page);                 // WAIT
+
+        do {
+            page = AcquireSuitablePage(header, false);  // false = reader
+            if (page == -1) Sleep(1);
+        } while (page == -1);
+
+        char semName[64];
         sprintf_s(semName, "%s%d", SEM_PREFIX, page);
-        
-        // Мьютекс переменной-счетчика
-        HANDLE hCountMut = CreateMutexA(NULL, FALSE, mutName);
-        // Семафор читателей
         HANDLE hWriteSem = CreateSemaphoreA(NULL, 1, 1, semName);
 
-        // --- БЛОК 1: ОЖИДАНИЕ (WAIT) ---
-        LogCsv(log, 0, page);
+        WaitForSingleObject(hWriteSem, INFINITE);
 
-        // Ждём счётчик читателей
-        WaitForSingleObject(hCountMut, INFINITE);
-        header->readers_on_page[page]++;
-        
-        // блокировка доступа писателям
-        if (header->readers_on_page[page] == 1) {
-            WaitForSingleObject(hWriteSem, INFINITE);
-        }
-        ReleaseMutex(hCountMut); // Выход из защиты счетчика
+        LogCsv(log, 1, page);                 // ACTIVE
 
-        // --- БЛОК 2: АКТИВНОСТЬ (ACTIVE) ---
-        LogCsv(log, 1, page);
-
-        // Вычисление адреса для чтения
         char* pagePtr = (char*)pBuf + sizeof(ControlHeader) + page * si.dwPageSize;
         char readBuffer[256];
-        
-        // Безопасное копирование данных из разделяемой памяти в локальный буфер
         strncpy_s(readBuffer, pagePtr, sizeof(readBuffer) - 1);
         readBuffer[255] = '\0';
-        
         std::cout << "Reader " << GetCurrentProcessId() << " read from page " << page << ": " << readBuffer << std::endl;
 
         RandomSleep();
 
-        // --- БЛОК 3: ОСВОБОЖДЕНИЕ (RELEASE) ---
-        LogCsv(log, 2, page); 
-
-        // Освобождаем счётчик чистателей
-        WaitForSingleObject(hCountMut, INFINITE);
+        // После чтения освобождаем страницу
+        HANDLE hControlMutex = GetControlMutex();
+        WaitForSingleObject(hControlMutex, INFINITE);
         header->readers_on_page[page]--;
-        
-        // Разрешение писателям заходить на страницу
         if (header->readers_on_page[page] == 0) {
-            ReleaseSemaphore(hWriteSem, 1, NULL);
+            header->page_state[page] = READY_FOR_WRITE;
         }
-        ReleaseMutex(hCountMut);
+        ReleaseMutex(hControlMutex);
 
-        CloseHandle(hCountMut);
+        LogCsv(log, 2, page);                 // RELEASE
+        ReleaseSemaphore(hWriteSem, 1, NULL);
+
         CloseHandle(hWriteSem);
         Sleep(100);
     }
